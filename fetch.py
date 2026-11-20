@@ -37,8 +37,18 @@ def completed(s: pd.Series, mkt: str) -> pd.Series:
 
 
 def hist_yf(tk):
-    import yfinance as yf
-    return yf.Ticker(tk).history(period="15d", interval="1d", auto_adjust=False)["Close"].dropna()
+    """야후 차트 API에서 일봉 종가. 마지막 날 종가가 비어 있으면(야후 지연) 'regularMarketPrice'로 채운다."""
+    import requests
+    r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{tk}",
+                     params={"range": "15d", "interval": "1d"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    res = r.json()["chart"]["result"][0]
+    meta, tz = res["meta"], res["meta"]["exchangeTimezoneName"]
+    idx = pd.to_datetime(res["timestamp"], unit="s", utc=True).tz_convert(tz)
+    s = pd.Series(res["indicators"]["quote"][0]["close"], index=idx, dtype="float64")
+    mt = pd.Timestamp(meta["regularMarketTime"], unit="s", tz="UTC").tz_convert(tz)
+    if len(s) and pd.isna(s.iloc[-1]) and mt.date() == s.index[-1].date():
+        s.iloc[-1] = meta["regularMarketPrice"]
+    return s.dropna()
 
 
 def hist_fdr(code):
@@ -49,7 +59,10 @@ def hist_fdr(code):
 
 def row(name, yt, fc, mkt):
     err = ""
-    for src, fn, arg in (("yfinance", hist_yf, yt), ("FinanceDataReader", hist_fdr, fc)):
+    srcs = [("yahoo", hist_yf, yt), ("FinanceDataReader", hist_fdr, fc)]
+    if mkt == "KR":
+        srcs.reverse()          # 한국은 네이버 기반 FinanceDataReader가 더 정확하므로 먼저
+    for src, fn, arg in srcs:
         if not arg:
             continue
         try:
